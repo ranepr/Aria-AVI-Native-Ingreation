@@ -1,0 +1,152 @@
+formatVersion: 1
+name: ALB - Web Servers
+version: 1
+inputs:
+  webcount:
+    title: "No. of Web Workloads:"
+    type: integer
+    default: 2
+    description: Load Balancer will be deployed <br> if Frontend Workload count <br> is >= 2
+  environment:
+    type: string
+    description: Target Environment
+    title: Target Environment
+    oneOf:
+      - title: VCF (VMware Cloud Foundation)
+        const: env:dev
+  username:
+    type: string
+    description: The username you would like to have for the installation.
+    default: demouser
+    title: System Admin Account Username
+  password:
+    type: string
+    description: The password you would like to use for the ocuser account.
+    title: OpenCart Admin Account Password
+    pattern: "[a-z0-9A-Z@#$]+"
+    encrypted: true
+  health_monitor:
+    type: array
+    items:
+      type: string
+    title: Health Monitors
+    default:
+      - System-HTTP
+    minItems: 1
+    maxItems: 10
+  lb_algorithm:
+    type: string
+    title: Load Balancer Algorithm
+    description: The load balancing algorithm will pick a server within the pool's list of available servers.
+    readOnly: false
+    default: LB_ALGORITHM_LEAST_CONNECTIONS
+    oneOf:
+      - title: Least Connections
+        const: LB_ALGORITHM_LEAST_CONNECTIONS
+      - title: Round Robin
+        const: LB_ALGORITHM_ROUND_ROBIN
+      - title: Fastest Response
+        const: LB_ALGORITHM_FASTEST_RESPONSE
+      - title: Consistent Hash
+        const: LB_ALGORITHM_CONSISTENT_HASH
+      - title: Least Load
+        const: LB_ALGORITHM_LEAST_LOAD
+      - title: Fewest Servers
+        const: LB_ALGORITHM_FEWEST_SERVERS
+      - title: Random
+        const: LB_ALGORITHM_RANDOM
+      - title: Fewest Tasks
+        const: LB_ALGORITHM_FEWEST_TASKS
+      - title: Core Affinity
+        const: LB_ALGORITHM_CORE_AFFINITY
+resources:
+  Allocations_CloudZone:
+    type: Allocations.CloudZone
+    properties:
+      accountType: avilb
+      constraints:
+        - tag: env:dev
+  Persistence_Profile:
+    type: Idem.AVILB.PROFILES.APPLICATION_PERSISTENCE_PROFILE
+    properties:
+      name: web-profile-${uuid()}
+      account: ${resource.Allocations_CloudZone.selectedCloudAccount.name}
+      persistence_type: PERSISTENCE_TYPE_CLIENT_IP_ADDRESS
+#  Health_Monitor:
+#    type: Idem.AVILB.PROFILES.HEALTH_MONITOR
+#    properties:
+#      name: web-monitor-${uuid()}
+#      type: HEALTH_MONITOR_HTTP
+#      account: ${resource.Allocations_CloudZone.selectedCloudAccount.name}
+#      monitor_port: 80
+  VirtualService:
+    type: Idem.AVILB.APPLICATIONS.VIRTUAL_SERVICE
+    properties:
+      name: web-vs-${uuid()}
+      account: wlkd-domain-avi
+      cloud_type: CLOUD_VCENTER
+      services:
+        - port: "80"
+      pool_ref: ${resource.Pool.name}
+      vsvip_ref: ${resource.VIP.name}
+  Pool:
+    type: Idem.AVILB.APPLICATIONS.POOL
+    properties:
+      name: web-pool-${uuid()}
+      account: wlkd-domain-avi
+      tier1_lr: /infra/tier-1s/T1-VI1-AVIVIP
+      default_server_port: "80"
+      health_monitor_refs: ${input.health_monitor}
+      lb_algorithm: ${input.lb_algorithm}
+      application_persistence_profile_ref: /api/applicationpersistenceprofile/${resource.Persistence_Profile.resource_id}
+      servers: '${map_by(resource.Web_Server[*].address, address => {"ip": {"addr": address, "type" : "V4"}})}'
+  VIP:
+    type: Idem.AVILB.APPLICATIONS.VS_VIP
+    properties:
+      name: web-vip-${uuid()}
+      tier1_lr: /infra/tier-1s/T1-VI1-AVIVIP
+      account: wlkd-domain-avi
+      vip:
+        - vip_id: 0
+          auto_allocate_ip: true
+          auto_allocate_ip_type: V4_ONLY
+          enabled: true
+          ipam_network_subnet:
+            network_ref: ${resource.Cloud_NSX_Network_1.resourceName}
+  Web_Server:
+    type: Cloud.vSphere.Machine
+    properties:
+      name: web
+      count: ${input.webcount}
+      flavor: medium
+      image: ubuntu1804
+      cloudConfig: |
+        packages:
+          - apache2
+          - open-vm-tools
+
+        runcmd:
+          ### update the top of the web page to the web servers resource name
+          - sed -i 's/Apache2 Ubuntu Default Page/${self.resourceName}/g' /var/www/html/index.html
+          
+          ### Restart services
+          - systemctl reload apache2
+          - systemctl restart apache2
+          
+          ### Log completion
+          - echo 'Cloud-init is done!' >> /tmp/finished.txt
+      networks:
+        - network: ${resource.Cloud_NSX_Network_2.id}
+          assignment: static
+  Cloud_NSX_Network_1:
+    type: Cloud.NSX.Network
+    properties:
+      networkType: existing
+      constraints:
+        - tag: net:avi
+  Cloud_NSX_Network_2:
+    type: Cloud.NSX.Network
+    properties:
+      networkType: existing
+      constraints:
+        - tag: net:vcfwld
